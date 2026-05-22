@@ -84,7 +84,7 @@ success() { echo -e "  ${B_GREEN}✔ ${BOLD}$*${NC}"; }
 step_header() {
     local current="$1" total="$2" title="$3"
     echo ""
-    printf "  ${B_BLUE}[%d/%d]${NC} ${BOLD}%s${NC}\n" "$current" "$total" "$title"
+    printf "  ${B_BLUE}[%s/%s]${NC} ${BOLD}%s${NC}\n" "$current" "$total" "$title"
     hr "─" "${GRAY}"
 }
 
