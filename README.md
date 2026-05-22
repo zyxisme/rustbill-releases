@@ -23,7 +23,18 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/zyxisme/rustbill-releases/main/deploy.sh)
 ```
 
-交互式脚本，自动完成：架构检测 → 版本选择 → 下载 → SHA256 校验 → 解压 → 配置引导 → (可选) systemd 服务安装。
+交互式脚本，逐步引导完成部署：
+
+1. **架构检测** — 自动识别 x86_64 / ARM64
+2. **版本选择** — 编号菜单 + Release Notes 预览
+3. **下载 & SHA256 校验** — 安全完整性验证
+4. **交互式配置向导**:
+   - **数据库** — 自动探测本地 PostgreSQL，测试连接，自动创建用户和数据库
+   - **JWT 密钥** — 自动生成强随机密钥
+   - **管理员账户** — 交互输入或自动生成强密码
+   - **域名 & HTTPS** — 一键配置 Caddy 反向代理 + Let's Encrypt 自动证书
+   - **Caddy 安装** — 自动检测/安装/配置/启动 Caddy
+5. **systemd 服务** — 可选开机自启，安装后可直接启动验证
 
 **命令行选项：**
 
