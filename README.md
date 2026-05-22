@@ -1,8 +1,15 @@
-# RustBill
+<p align="center">
+  <img src="logo.svg" width="80" alt="RustBill">
+</p>
 
-基于 Rust 的分布式云服务器财务管理系统 — 插件化架构，支持多供应商、多支付网关、多渠道通知。
+<h1 align="center">RustBill</h1>
 
-[![Platform](https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-orange)](#)
+<p align="center">基于 Rust 的分布式云服务器财务管理系统 — 插件化架构，支持多供应商、多支付网关、多渠道通知。</p>
+
+<p align="center">
+  <a href="https://github.com/zyxisme/rustbill/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
+  <img src="https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-orange" alt="Platform">
+</p>
 
 ---
 
