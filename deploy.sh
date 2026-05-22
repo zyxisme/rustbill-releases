@@ -16,20 +16,21 @@ REPO="zyxisme/rustbill-releases"
 API_BASE="https://api.github.com/repos/${REPO}"
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"
 
-# ── 颜色体系 ──────────────────────────────────────────────────────────────────
+# ── 颜色体系 (ANSI-C quoting: 变量存真正的 ESC 字符, echo/printf 均兼容) ─────
 # 基础色
-RED='\033[0;31m';    GREEN='\033[0;32m';  YELLOW='\033[1;33m'
-BLUE='\033[0;34m';   CYAN='\033[0;36m';   MAGENTA='\033[0;35m'
-WHITE='\033[1;37m';  GRAY='\033[0;90m';   DIM='\033[2m'
+RED=$'\033[0;31m';    GREEN=$'\033[0;32m';  YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m';   CYAN=$'\033[0;36m';   MAGENTA=$'\033[0;35m'
+WHITE=$'\033[1;37m';  GRAY=$'\033[0;90m';   DIM=$'\033[2m'
 # 粗体
-BOLD='\033[1m';      B_RED='\033[1;31m';  B_GREEN='\033[1;32m'
-B_YELLOW='\033[1;33m'; B_BLUE='\033[1;34m'; B_CYAN='\033[1;36m'
-B_MAGENTA='\033[1;35m'; B_WHITE='\033[1;37m'
+BOLD=$'\033[1m';      B_RED=$'\033[1;31m';  B_GREEN=$'\033[1;32m'
+B_YELLOW=$'\033[1;33m'; B_BLUE=$'\033[1;34m'; B_CYAN=$'\033[1;36m'
+B_MAGENTA=$'\033[1;35m'; B_WHITE=$'\033[1;37m'
 # 背景
-BG_GREEN='\033[42m'; BG_RED='\033[41m';   BG_BLUE='\033[44m'
-BG_CYAN='\033[46m';   BG_DARK='\033[48;5;236m'
+BG_GREEN=$'\033[42m'; BG_RED=$'\033[41m';   BG_BLUE=$'\033[44m'
+BG_CYAN=$'\033[46m'
 # 重置
-NC='\033[0m'
+NC=$'\033[0m'
+CLEAR_LINE=$'\033[K'
 
 # ── 终端尺寸 ──────────────────────────────────────────────────────────────────
 get_term_width() {
