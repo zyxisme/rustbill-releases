@@ -19,10 +19,19 @@
 ## 一键部署
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zyxisme/rustbill-releases/main/deploy.sh | bash
+# 交互式（推荐 — 支持版本选择菜单、配置引导）
+bash <(curl -fsSL https://raw.githubusercontent.com/zyxisme/rustbill-releases/main/deploy.sh)
 ```
 
 交互式脚本，自动完成：架构检测 → 版本选择 → 下载 → SHA256 校验 → 解压 → 配置引导 → (可选) systemd 服务安装。
+
+**命令行选项：**
+
+```bash
+bash <(curl -fsSL ...) -- -y           # 非交互模式（CI/CD，自动选最新版）
+bash <(curl -fsSL ...) -- -u           # 仅更新已有实例
+bash <(curl -fsSL ...) -- -y -v v1.0   # 非交互指定版本
+```
 
 > 需要 bash 4+、curl、tar。PostgreSQL 16+ 需单独安装。
 

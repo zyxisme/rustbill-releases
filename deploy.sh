@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# curl | bash 管道下 stdin 被脚本内容占用，重定向到终端确保 read 可交互
+exec < /dev/tty 2>/dev/null || true
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                    RustBill 部署/更新脚本                                    ║
 # ║                    交互式安装 · 一键升级 · 安全回滚                           ║
