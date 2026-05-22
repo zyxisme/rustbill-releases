@@ -693,68 +693,346 @@ else
     box_bottom
 fi
 
-# ── 配置初始化 (仅新安装) ─────────────────────────────────────────────────────
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  交互式配置向导 (仅新安装)                                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-if ! $IS_UPDATING; then
+if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
     echo ""
-    step_header "~" "$TOTAL_STEPS" "配置初始化"
+    step_header "~" "$TOTAL_STEPS" "交互式配置向导"
 
-    if [ ! -f "${INSTALL_DIR}/config.toml" ]; then
-        cp "${INSTALL_DIR}/config.example.toml" "${INSTALL_DIR}/config.toml"
-        ok "已从模板创建 config.toml"
+    echo ""
+    echo -e "  ${BOLD}现在将一步步引导你完成配置，无需手动编辑文件。${NC}"
+    echo -e "  ${GRAY}直接回车使用方括号中的默认值。${NC}"
+    echo ""
+
+    # ── 2.0 读取默认值 ────────────────────────────────────────────────────────
+    cp "${INSTALL_DIR}/config.example.toml" "${INSTALL_DIR}/config.toml"
+
+    # ── 2.1 数据库配置 ────────────────────────────────────────────────────────
+    step_header "2.1" "$TOTAL_STEPS" "数据库配置"
+
+    # 探测本地 PostgreSQL
+    PG_LOCAL=false
+    PG_VERSION=""
+    if command -v psql &>/dev/null; then
+        PG_VERSION=$(psql --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "")
+        [ -n "$PG_VERSION" ] && PG_LOCAL=true
+    fi
+    if $PG_LOCAL; then
+        echo -e "  ${GREEN}✔${NC} 检测到本地 PostgreSQL ${PG_VERSION}"
     else
-        ok "config.toml 已存在，跳过"
+        echo -e "  ${GRAY}ℹ${NC}  未检测到本地 psql，将手动输入数据库连接信息"
+        echo -e "  ${GRAY}▸${NC} 安装指南: https://www.postgresql.org/download/"
+    fi
+    echo ""
+
+    printf "  ${BOLD}数据库主机${NC} [localhost]: "
+    read -r PG_HOST; PG_HOST="${PG_HOST:-localhost}"
+
+    printf "  ${BOLD}数据库端口${NC} [5432]: "
+    read -r PG_PORT; PG_PORT="${PG_PORT:-5432}"
+
+    printf "  ${BOLD}数据库名称${NC} [rustbill]: "
+    read -r PG_DB; PG_DB="${PG_DB:-rustbill}"
+
+    printf "  ${BOLD}数据库用户${NC} [rustbill]: "
+    read -r PG_USER; PG_USER="${PG_USER:-rustbill}"
+
+    printf "  ${BOLD}数据库密码${NC}: "
+    read -rs PG_PASS
+    echo ""
+    if [ -z "$PG_PASS" ]; then
+        err "数据库密码不能为空"
+        exit 1
+    fi
+
+    PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+
+    # 测试连接 & 自动初始化
+    echo ""
+    spinner_start "正在测试数据库连接..."
+
+    if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+        spinner_ok "数据库连接成功"
+    elif PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "postgres" -c "SELECT 1" &>/dev/null 2>&1; then
+        spinner_stop
+        echo ""
+        warn "数据库 ${PG_DB} 不存在"
+        confirm "是否自动创建数据库 ${PG_DB}?" "y"
+        read -r create_db
+        if [ "${create_db,,}" = "y" ] || [ "${create_db,,}" = "yes" ]; then
+            spinner_start "正在创建数据库 ${PG_DB}..."
+            PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "postgres" -c "CREATE DATABASE ${PG_DB};" &>/dev/null 2>&1
+            spinner_ok "数据库 ${PG_DB} 已创建"
+        else
+            warn "跳过数据库创建，请手动创建后重试"
+            exit 1
+        fi
+    else
+        spinner_stop
+        echo ""
+        warn "无法连接 PostgreSQL 或用户 ${PG_USER} 不存在"
+
+        # 尝试用 postgres 超级用户创建
+        if [ "$PG_HOST" = "localhost" ] || [ "$PG_HOST" = "127.0.0.1" ]; then
+            echo ""
+            echo -e "  ${BOLD}尝试用 postgres 超级用户自动创建用户和数据库...${NC}"
+            printf "  ${BOLD}postgres 超级用户密码${NC} [回车跳过]: "
+            read -rs PG_SU_PASS
+            echo ""
+
+            if [ -n "$PG_SU_PASS" ]; then
+                if PGPASSWORD="$PG_SU_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "postgres" -d "postgres" -c "SELECT 1" &>/dev/null 2>&1; then
+                    spinner_start "正在创建用户 ${PG_USER} 和数据库 ${PG_DB}..."
+                    PGPASSWORD="$PG_SU_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "postgres" -d "postgres" <<SQLEOF &>/dev/null 2>&1
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${PG_USER}') THEN
+    CREATE ROLE "${PG_USER}" LOGIN PASSWORD '${PG_PASS}';
+  END IF;
+END
+\$\$;
+CREATE DATABASE "${PG_DB}" OWNER "${PG_USER}";
+GRANT ALL PRIVILEGES ON DATABASE "${PG_DB}" TO "${PG_USER}";
+SQLEOF
+                    spinner_ok "用户和数据库已创建"
+                else
+                    spinner_err "postgres 超级用户密码错误"
+                    exit 1
+                fi
+            else
+                warn "跳过自动创建，请手动完成数据库初始化后重试"
+                exit 1
+            fi
+        else
+            echo ""
+            echo -e "  ${YELLOW}远程数据库需要手动创建。请确保以下已就绪:${NC}"
+            echo -e "    - 用户 ${BOLD}${PG_USER}${NC} 已创建"
+            echo -e "    - 数据库 ${BOLD}${PG_DB}${NC} 已创建"
+            echo -e "    - pg_hba.conf 允许 ${PG_HOST} 连接"
+            echo ""
+            confirm "以上已就绪，继续?" "y"
+            read -r continue_anyway
+            [ "${continue_anyway,,}" != "y" ] && [ "${continue_anyway,,}" != "yes" ] && exit 1
+        fi
+    fi
+
+    # 写入 config.toml
+    # 使用 sed 替换占位值
+    sed -i "s|url = \"postgres://localhost:5432/rustbill\"|url = \"${PG_URL}\"|" "${INSTALL_DIR}/config.toml"
+
+    echo ""
+    box_top
+    box_line "$(printf "%-14s  ${GREEN}✔${NC}" "数据库配置:")"
+    box_line "  ${GRAY}${PG_URL}${NC}"
+    box_bottom
+
+    # ── 2.2 JWT 密钥 ──────────────────────────────────────────────────────────
+    step_header "2.2" "$TOTAL_STEPS" "安全配置"
+
+    JWT_SECRET=$(openssl rand -base64 48 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 64)
+    sed -i "s|secret = \"\"|secret = \"${JWT_SECRET}\"|" "${INSTALL_DIR}/config.toml"
+    ok "JWT 密钥已自动生成"
+    echo -e "  ${GRAY}▸ ${JWT_SECRET:0:32}...${NC}"
+
+    # ── 2.3 管理员账户 ────────────────────────────────────────────────────────
+    echo ""
+    printf "  ${BOLD}管理员用户名${NC} [admin]: "
+    read -r ADMIN_USER; ADMIN_USER="${ADMIN_USER:-admin}"
+
+    printf "  ${BOLD}管理员密码${NC}: "
+    read -rs ADMIN_PASS
+    echo ""
+    if [ -z "$ADMIN_PASS" ]; then
+        ADMIN_PASS=$(openssl rand -base64 12 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
+        echo -e "  ${YELLOW}⚠${NC}  未输入密码，已自动生成: ${BOLD}${ADMIN_PASS}${NC}"
+        echo -e "  ${YELLOW}⚠${NC}  请务必记住此密码！"
+        echo ""
+    fi
+
+    sed -i "s|admin_username = \"admin\"|admin_username = \"${ADMIN_USER}\"|" "${INSTALL_DIR}/config.toml"
+    sed -i "s|admin_password = \"CHANGE_ME_TO_A_STRONG_PASSWORD\"|admin_password = \"${ADMIN_PASS}\"|" "${INSTALL_DIR}/config.toml"
+
+    # 建议的安全路径
+    ADMIN_PATH="/admin"
+    echo ""
+    echo -e "  ${BOLD}管理后台路径${NC} — 生产环境建议改为随机字符串防爆破"
+    printf "  [${ADMIN_PATH}]: "
+    read -r input_path
+    if [ -n "$input_path" ]; then
+        ADMIN_PATH="$input_path"
+        sed -i "s|# admin_path = \"/admin\"|admin_path = \"${ADMIN_PATH}\"|" "${INSTALL_DIR}/config.toml"
+    fi
+
+    # ── 2.4 域名 (Caddy) ─────────────────────────────────────────────────────
+    step_header "2.3" "$TOTAL_STEPS" "域名 & HTTPS"
+
+    RUSTBILL_DOMAIN=""
+    echo -e "  ${BOLD}配置域名后可通过 Caddy 自动获取 SSL 证书 (Let's Encrypt)。${NC}"
+    echo -e "  ${GRAY}留空则跳过 Caddy 配置，仅本地运行。${NC}"
+    echo ""
+    printf "  ${BOLD}域名${NC} (如 rustbill.example.com) [跳过]: "
+    read -r RUSTBILL_DOMAIN
+
+    if [ -n "$RUSTBILL_DOMAIN" ]; then
+        # 写入 config.toml 的 host 为 127.0.0.1 (由 Caddy 反代)
+        sed -i "s|host = \"0.0.0.0\"|host = \"127.0.0.1\"|" "${INSTALL_DIR}/config.toml"
+
+        ok "域名设置为: ${BOLD}${RUSTBILL_DOMAIN}${NC}"
+
+        echo ""
+        printf "  ${BOLD}通知邮箱${NC} (用于 Let's Encrypt 和系统通知) [admin@${RUSTBILL_DOMAIN#*.}]: "
+        read -r NOTIFY_EMAIL
+        NOTIFY_EMAIL="${NOTIFY_EMAIL:-admin@${RUSTBILL_DOMAIN#*.}}"
+
+        sed -i "s|# notify_email = \"admin@example.com\"|notify_email = \"${NOTIFY_EMAIL}\"|" "${INSTALL_DIR}/config.toml"
+    else
+        warn "跳过域名配置"
     fi
 
     echo ""
-    echo -e "  ${B_YELLOW}▸ 请务必编辑 config.toml 填入以下必填项:${NC}"
-    echo -e "    ${DIM}1.${NC} ${BOLD}[db].url${NC}            PostgreSQL 连接串"
-    echo -e "    ${DIM}2.${NC} ${BOLD}[jwt].secret${NC}        JWT 签名密钥"
-    echo -e "    ${DIM}3.${NC} ${BOLD}[bootstrap].admin_password${NC}  初始管理员密码"
-    echo ""
+    box_top
+    box_line "${BOLD}配置摘要:${NC}"
+    box_empty
+    box_line "  数据库:    ${GRAY}${PG_URL}${NC}"
+    box_line "  管理员:    ${BOLD}${ADMIN_USER}${NC}"
+    box_line "  JWT 密钥:  ${GRAY}${JWT_SECRET:0:24}...${NC} (已自动生成)"
+    [ -n "$RUSTBILL_DOMAIN" ] && box_line "  域名:      ${BOLD}${RUSTBILL_DOMAIN}${NC}"
+    [ -n "$ADMIN_PATH" ] && [ "$ADMIN_PATH" != "/admin" ] && box_line "  管理路径:  ${BOLD}${ADMIN_PATH}${NC}"
+    box_bottom
 
-    if ! $NON_INTERACTIVE; then
-        confirm "是否现在编辑配置?" "n"
-        read -r edit_now
-        if [ "${edit_now,,}" = "y" ] || [ "${edit_now,,}" = "yes" ]; then
-            EDITOR="${EDITOR:-${VISUAL:-}}"
-            if [ -z "$EDITOR" ]; then
-                for candidate in nano vim vi; do
-                    command -v "$candidate" &>/dev/null && { EDITOR="$candidate"; break; }
-                done
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Caddy 安装 & 配置
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    if [ -n "$RUSTBILL_DOMAIN" ]; then
+        echo ""
+        step_header "2.4" "$TOTAL_STEPS" "Caddy 反向代理"
+
+        CADDY_INSTALLED=false
+        if command -v caddy &>/dev/null; then
+            CADDY_INSTALLED=true
+            ok "Caddy 已安装: $(caddy version 2>/dev/null | head -1)"
+        else
+            warn "Caddy 未安装"
+            echo ""
+            echo -e "  Caddy 是推荐的反向代理，支持自动 HTTPS (HTTP/3 QUIC)。"
+            confirm "是否自动安装 Caddy?" "y"
+            read -r install_caddy
+            if [ "${install_caddy,,}" = "y" ] || [ "${install_caddy,,}" = "yes" ]; then
+
+                # 检测包管理器
+                CADDY_INSTALL_CMD=""
+                if command -v apt &>/dev/null; then
+                    spinner_start "通过 apt 安装 Caddy..."
+                    if sudo apt update -qq &>/dev/null && sudo apt install -y -qq caddy &>/dev/null; then
+                        spinner_ok "Caddy 安装完成"
+                        CADDY_INSTALLED=true
+                    else
+                        spinner_err "apt 安装失败"
+                    fi
+                fi
+
+                if ! $CADDY_INSTALLED && command -v dnf &>/dev/null; then
+                    spinner_start "通过 dnf 安装 Caddy..."
+                    if sudo dnf install -y caddy &>/dev/null; then
+                        spinner_ok "Caddy 安装完成"
+                        CADDY_INSTALLED=true
+                    else
+                        spinner_err "dnf 安装失败"
+                    fi
+                fi
+
+                if ! $CADDY_INSTALLED; then
+                    warn "自动安装失败，请手动安装 Caddy: https://caddyserver.com/docs/install"
+                fi
             fi
-            if [ -n "$EDITOR" ]; then
-                "$EDITOR" "${INSTALL_DIR}/config.toml"
+        fi
+
+        if $CADDY_INSTALLED; then
+            CADDYFILE="/etc/caddy/Caddyfile"
+            if [ ! -w "/etc/caddy" ]; then
+                # 尝试项目本地 Caddyfile
+                CADDYFILE="${INSTALL_DIR}/Caddyfile"
+                warn "无权限写入 /etc/caddy/，将生成到 ${CADDYFILE}"
+            fi
+
+            spinner_start "正在生成 Caddyfile..."
+            cat > "/tmp/rustbill-caddyfile-$$" <<CADDYEOF
+# RustBill — ${RUSTBILL_DOMAIN}
+# HTTP/3 + TLS 自动管理 (Let's Encrypt)
+
+${RUSTBILL_DOMAIN} {
+    # gRPC-Web → gRPC bridge to tonic backend
+    handle /rustbill.* {
+        reverse_proxy h2c://127.0.0.1:50051 {
+            transport http {
+                versions h2c
+            }
+        }
+    }
+
+    # Admin SPA is embedded in the server
+    handle {
+        reverse_proxy 127.0.0.1:50051
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # Logs (optional)
+    log {
+        output file /var/log/caddy/rustbill.log
+    }
+}
+CADDYEOF
+
+            if [ -w "$(dirname "$CADDYFILE")" ]; then
+                cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
             else
-                warn "未找到编辑器，请手动编辑"
+                sudo cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
+            fi
+            rm -f "/tmp/rustbill-caddyfile-$$"
+            spinner_ok "Caddyfile 已生成: ${CADDYFILE}"
+
+            # 测试配置
+            echo ""
+            spinner_start "正在验证 Caddy 配置..."
+            if sudo caddy validate --config "$CADDYFILE" &>/dev/null 2>&1; then
+                spinner_ok "Caddy 配置验证通过"
+            else
+                spinner_err "Caddy 配置验证失败，请检查 Caddyfile"
+            fi
+
+            # 询问是否启动
+            echo ""
+            confirm "是否现在启动 Caddy?" "y"
+            read -r start_caddy
+            if [ "${start_caddy,,}" = "y" ] || [ "${start_caddy,,}" = "yes" ]; then
+                spinner_start "正在启动 Caddy..."
+                if sudo systemctl enable caddy &>/dev/null 2>&1 && sudo systemctl restart caddy &>/dev/null 2>&1; then
+                    spinner_ok "Caddy 已启动 (开机自启)"
+                else
+                    sudo caddy start --config "$CADDYFILE" &>/dev/null 2>&1 && spinner_ok "Caddy 已启动" || spinner_err "Caddy 启动失败"
+                fi
+            else
+                info "Caddy 未启动，稍后可手动启动: sudo systemctl start caddy"
             fi
         fi
     fi
 fi
 
-# ── systemd 服务 ──────────────────────────────────────────────────────────────
+# ── systemd 服务 (仅新安装，非更新) ───────────────────────────────────────────
 
-echo ""
-step_header "~" "$TOTAL_STEPS" "Systemd 服务"
+if ! $IS_UPDATING; then
+    echo ""
+    step_header "~" "$TOTAL_STEPS" "Systemd 服务"
 
-if $IS_UPDATING; then
-    if $SERVICE_WAS_RUNNING; then
-        spinner_start "正在重启 rustbill-server 服务..."
-        sudo systemctl start rustbill-server || warn "启动失败，请检查日志"
-        sleep 2
-        if systemctl is-active --quiet rustbill-server 2>/dev/null; then
-            spinner_ok "服务已成功重启"
-        else
-            spinner_err "服务启动异常"
-            echo -e "  ${YELLOW}▸ 回滚命令: ${BACKUP_DIR}/rollback.sh${NC}"
-            echo -e "  ${GRAY}▸ 查看日志: sudo journalctl -u rustbill-server -n 50${NC}"
-        fi
-    else
-        ok "服务未在运行，跳过重启"
-        echo ""
-        echo -e "  ${GRAY}▸ 手动启动:${NC} cd ${INSTALL_DIR} && ./rustbill-server"
-    fi
-else
     echo "  RustBill 可注册为 systemd 服务，实现开机自启和异常重启。"
     echo ""
 
@@ -812,7 +1090,47 @@ WantedBy=multi-user.target"
         box_line "  查看状态:     sudo systemctl status rustbill-server"
         box_line "  实时日志:     sudo journalctl -u rustbill-server -f"
         box_bottom
+
+        # 询问是否现在启动
+        if ! $NON_INTERACTIVE; then
+            echo ""
+            confirm "是否现在启动 RustBill?" "y"
+            read -r start_now
+            if [ "${start_now,,}" = "y" ] || [ "${start_now,,}" = "yes" ]; then
+                sudo systemctl start rustbill-server
+                sleep 2
+                if systemctl is-active --quiet rustbill-server 2>/dev/null; then
+                    ok "RustBill 已启动"
+                else
+                    err "启动失败，请检查: sudo journalctl -u rustbill-server -n 30"
+                fi
+            fi
+        fi
     else
+        echo -e "  ${GRAY}▸ 手动启动:${NC} cd ${INSTALL_DIR} && ./rustbill-server"
+    fi
+fi
+
+# ── 更新模式的 systemd 重启 ───────────────────────────────────────────────────
+
+if $IS_UPDATING; then
+    echo ""
+    step_header "~" "$TOTAL_STEPS" "Systemd 服务"
+
+    if $SERVICE_WAS_RUNNING; then
+        spinner_start "正在重启 rustbill-server 服务..."
+        sudo systemctl start rustbill-server || warn "启动失败，请检查日志"
+        sleep 2
+        if systemctl is-active --quiet rustbill-server 2>/dev/null; then
+            spinner_ok "服务已成功重启"
+        else
+            spinner_err "服务启动异常"
+            echo -e "  ${YELLOW}▸ 回滚命令: ${BACKUP_DIR}/rollback.sh${NC}"
+            echo -e "  ${GRAY}▸ 查看日志: sudo journalctl -u rustbill-server -n 50${NC}"
+        fi
+    else
+        ok "服务未在运行，跳过重启"
+        echo ""
         echo -e "  ${GRAY}▸ 手动启动:${NC} cd ${INSTALL_DIR} && ./rustbill-server"
     fi
 fi
@@ -857,14 +1175,22 @@ if $IS_UPDATING; then
     box_bottom
 else
     box_top
-    box_line "${BOLD}快速开始:${NC}"
+    box_line "${BOLD}部署完成，配置已就绪:${NC}"
     box_empty
-    box_line "  ${DIM}1.${NC} 编辑配置:     ${INSTALL_DIR}/config.toml"
-    box_line "  ${DIM}2.${NC} 启动服务:     cd ${INSTALL_DIR} && ./rustbill-server"
-    box_line "  ${DIM}3.${NC} 管理后台:     http://localhost:50051/admin"
-    box_line "  ${DIM}4.${NC} CLI 管理:     ${INSTALL_DIR}/rustbill-cli --help"
+    box_line "  配置文件:    ${INSTALL_DIR}/config.toml (已自动填写)"
+    box_line "  启动服务:    sudo systemctl start rustbill-server"
+    box_line "  数据库迁移:  首次启动自动执行"
+    if [ -n "${RUSTBILL_DOMAIN:-}" ]; then
+        box_empty
+        box_line "  ${BOLD}访问地址:${NC}"
+        box_line "  管理后台:    https://${RUSTBILL_DOMAIN}${ADMIN_PATH:-/admin}"
+        box_line "  客户前台:    部署 consumer-dist/ 到 Web 服务器"
+    else
+        box_empty
+        box_line "  管理后台:    http://localhost:50051${ADMIN_PATH:-/admin}"
+    fi
     box_empty
-    box_line "${GRAY}数据库迁移由 rustbill-server 启动时自动执行。${NC}"
+    box_line "  CLI 管理:     ${INSTALL_DIR}/rustbill-cli --help"
     box_bottom
 fi
 
