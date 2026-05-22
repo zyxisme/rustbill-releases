@@ -2,7 +2,6 @@
 
 基于 Rust 的分布式云服务器财务管理系统 — 插件化架构，支持多供应商、多支付网关、多渠道通知。
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/zyxisme/rustbill/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-orange)](#)
 
 ---
