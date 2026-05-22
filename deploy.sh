@@ -304,12 +304,12 @@ else
     printf "  ${GRAY}%4s  %-12s  %-16s  %s${NC}\n" "  #" "版本" "发布日期" "标题"
     hr "─" "${DIM}"
 
-    local idx=1
+    idx=1
     while IFS='|' read -r tag date name; do
         [ -z "$tag" ] && continue
-        local marker=""
+        marker=""
         [ "$tag" = "$LATEST_VERSION" ] && marker=" ${B_GREEN}◀ latest${NC}"
-        local short_date="${date:0:10}"
+        short_date="${date:0:10}"
         printf "  ${B_BLUE}%4d.${NC}  ${BOLD}%-12s${NC}  ${GRAY}%-16s${NC}  %s%s\n" \
             "$idx" "$tag" "${short_date:- }" "${name:$tag}" "$marker"
         idx=$((idx + 1))
@@ -318,7 +318,7 @@ else
 
     echo ""
     hr "─" "${DIM}"
-    printf "  ${BOLD}选择版本${NC} [1-${idx_minus_one}$((idx - 1)) / 回车=最新版 / q=退出]: "
+    printf "  ${BOLD}选择版本${NC} [1-$((idx - 1)) / 回车=最新版 / q=退出]: "
 
     read -r choice
     if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
@@ -329,7 +329,6 @@ else
         VERSION="$LATEST_VERSION"
     elif [[ "$choice" =~ ^[0-9]+$ ]]; then
         # Map menu number to tag
-        local selected
         selected=$(echo "$RELEASES_JSON" | jq -r ".[$((choice - 1))].tag_name" 2>/dev/null || true)
         if [ -n "$selected" ]; then
             VERSION="$selected"
@@ -346,7 +345,6 @@ else
 
     # 显示所选版本的 release notes 摘要 (如果有)
     if command -v jq &>/dev/null; then
-        local rn
         rn=$(echo "$RELEASES_JSON" | jq -r ".[] | select(.tag_name == \"$VERSION\") | .body" 2>/dev/null | head -10 || true)
         if [ -n "$rn" ]; then
             echo ""
@@ -497,7 +495,7 @@ if [ -f "${INSTALL_DIR}/rustbill-server" ]; then
     spinner_start "正在创建备份..."
     mkdir -p "$BACKUP_DIR"
 
-    local count=0; local total_backups=6
+    count=0; total_backups=6
     [ -f "${INSTALL_DIR}/config.toml" ]       && cp "${INSTALL_DIR}/config.toml"       "${BACKUP_DIR}/" && count=$((count+1))
     [ -f "${INSTALL_DIR}/config.local.toml" ] && cp "${INSTALL_DIR}/config.local.toml" "${BACKUP_DIR}/" && count=$((count+1))
     [ -f "${INSTALL_DIR}/rustbill-server" ]   && cp "${INSTALL_DIR}/rustbill-server"   "${BACKUP_DIR}/" && count=$((count+1))
