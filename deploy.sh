@@ -715,10 +715,14 @@ if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
     # 探测本地 PostgreSQL
     PG_LOCAL=false
     PG_VERSION=""
+    IS_ROOT=false
+    [ "$(id -u)" = "0" ] && IS_ROOT=true
+
     if command -v psql &>/dev/null; then
         PG_VERSION=$(psql --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "")
         [ -n "$PG_VERSION" ] && PG_LOCAL=true
     fi
+
     if $PG_LOCAL; then
         echo -e "  ${GREEN}✔${NC} 检测到本地 PostgreSQL ${PG_VERSION}"
     else
@@ -727,99 +731,132 @@ if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
     fi
     echo ""
 
-    printf "  ${BOLD}数据库主机${NC} [localhost]: "
-    read -r PG_HOST; PG_HOST="${PG_HOST:-localhost}"
-
-    printf "  ${BOLD}数据库端口${NC} [5432]: "
-    read -r PG_PORT; PG_PORT="${PG_PORT:-5432}"
-
     printf "  ${BOLD}数据库名称${NC} [rustbill]: "
     read -r PG_DB; PG_DB="${PG_DB:-rustbill}"
 
     printf "  ${BOLD}数据库用户${NC} [rustbill]: "
     read -r PG_USER; PG_USER="${PG_USER:-rustbill}"
 
-    printf "  ${BOLD}数据库密码${NC}: "
-    read -rs PG_PASS
-    echo ""
-    if [ -z "$PG_PASS" ]; then
-        err "数据库密码不能为空"
-        exit 1
-    fi
+    # 自动生成密码
+    PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
+    echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
 
+    PG_HOST="localhost"
+    PG_PORT="5432"
     PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
 
-    # 测试连接 & 自动初始化
+    # ── 自动初始化数据库 ────────────────────────────────────────────────────
     echo ""
-    spinner_start "正在测试数据库连接..."
+    spinner_start "正在初始化数据库..."
 
-    if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
-        spinner_ok "数据库连接成功"
-    elif PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "postgres" -c "SELECT 1" &>/dev/null 2>&1; then
-        spinner_stop
-        echo ""
-        warn "数据库 ${PG_DB} 不存在"
-        confirm "是否自动创建数据库 ${PG_DB}?" "y"
-        read -r create_db
-        if [ "${create_db,,}" = "y" ] || [ "${create_db,,}" = "yes" ]; then
-            spinner_start "正在创建数据库 ${PG_DB}..."
-            PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "postgres" -c "CREATE DATABASE ${PG_DB};" &>/dev/null 2>&1
-            spinner_ok "数据库 ${PG_DB} 已创建"
-        else
-            warn "跳过数据库创建，请手动创建后重试"
-            exit 1
+    DB_READY=false
+
+    if $PG_LOCAL; then
+        # 尝试 sudo -u postgres (root 或有 sudo 权限)
+        PG_CMD=""
+        if $IS_ROOT; then
+            PG_CMD="su - postgres -c"
+        elif command -v sudo &>/dev/null && sudo -n -u postgres true 2>/dev/null; then
+            PG_CMD="sudo -u postgres"
         fi
-    else
-        spinner_stop
-        echo ""
-        warn "无法连接 PostgreSQL 或用户 ${PG_USER} 不存在"
 
-        # 尝试用 postgres 超级用户创建
-        if [ "$PG_HOST" = "localhost" ] || [ "$PG_HOST" = "127.0.0.1" ]; then
-            echo ""
-            echo -e "  ${BOLD}尝试用 postgres 超级用户自动创建用户和数据库...${NC}"
-            printf "  ${BOLD}postgres 超级用户密码${NC} [回车跳过]: "
-            read -rs PG_SU_PASS
-            echo ""
+        if [ -n "$PG_CMD" ]; then
+            # 通过 postgres 系统用户免密码操作
+            spinner_stop
+            spinner_start "正在通过 postgres 用户创建角色和数据库..."
 
-            if [ -n "$PG_SU_PASS" ]; then
-                if PGPASSWORD="$PG_SU_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "postgres" -d "postgres" -c "SELECT 1" &>/dev/null 2>&1; then
-                    spinner_start "正在创建用户 ${PG_USER} 和数据库 ${PG_DB}..."
-                    PGPASSWORD="$PG_SU_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "postgres" -d "postgres" <<SQLEOF &>/dev/null 2>&1
+            $PG_CMD psql -c "SELECT 1" &>/dev/null 2>&1 || {
+                # 尝试启动 PostgreSQL
+                if $IS_ROOT; then
+                    systemctl start postgresql &>/dev/null 2>&1 || service postgresql start &>/dev/null 2>&1 || true
+                    sleep 2
+                fi
+            }
+
+            set +e
+            $PG_CMD psql &>/dev/null <<SQLEOF
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${PG_USER}') THEN
     CREATE ROLE "${PG_USER}" LOGIN PASSWORD '${PG_PASS}';
+  ELSE
+    ALTER ROLE "${PG_USER}" PASSWORD '${PG_PASS}';
   END IF;
 END
 \$\$;
-CREATE DATABASE "${PG_DB}" OWNER "${PG_USER}";
+SELECT 1 FROM pg_database WHERE datname = '${PG_DB}' \gset
+\if :{?1}
+  -- database exists
+\else
+  CREATE DATABASE "${PG_DB}" OWNER "${PG_USER}";
+\endif
 GRANT ALL PRIVILEGES ON DATABASE "${PG_DB}" TO "${PG_USER}";
+\c "${PG_DB}"
+GRANT ALL ON SCHEMA public TO "${PG_USER}";
 SQLEOF
-                    spinner_ok "用户和数据库已创建"
-                else
-                    spinner_err "postgres 超级用户密码错误"
-                    exit 1
+            PG_INIT_EXIT=$?
+            set -e
+
+            if [ $PG_INIT_EXIT -eq 0 ]; then
+                # 测试连接
+                if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                    spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
+                    DB_READY=true
                 fi
-            else
-                warn "跳过自动创建，请手动完成数据库初始化后重试"
-                exit 1
             fi
-        else
-            echo ""
-            echo -e "  ${YELLOW}远程数据库需要手动创建。请确保以下已就绪:${NC}"
-            echo -e "    - 用户 ${BOLD}${PG_USER}${NC} 已创建"
-            echo -e "    - 数据库 ${BOLD}${PG_DB}${NC} 已创建"
-            echo -e "    - pg_hba.conf 允许 ${PG_HOST} 连接"
-            echo ""
-            confirm "以上已就绪，继续?" "y"
-            read -r continue_anyway
-            [ "${continue_anyway,,}" != "y" ] && [ "${continue_anyway,,}" != "yes" ] && exit 1
+        fi
+
+        # 回退：用 peer 认证直连
+        if ! $DB_READY; then
+            spinner_stop
+            spinner_start "尝试 peer 认证..."
+            if sudo -u "$PG_USER" psql -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                spinner_ok "peer 认证连接成功"
+                DB_READY=true
+            elif sudo -u postgres psql -c "CREATE ROLE \"${PG_USER}\" LOGIN PASSWORD '${PG_PASS}'; CREATE DATABASE \"${PG_DB}\" OWNER \"${PG_USER}\"; GRANT ALL PRIVILEGES ON DATABASE \"${PG_DB}\" TO \"${PG_USER}\";" &>/dev/null 2>&1; then
+                if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                    spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
+                    DB_READY=true
+                fi
+            fi
         fi
     fi
 
+    # 远程数据库：直接测试连接
+    if ! $DB_READY && ! $PG_LOCAL; then
+        spinner_stop
+        printf "  ${BOLD}数据库主机${NC} [${PG_HOST}]: "
+        read -r RH; PG_HOST="${RH:-$PG_HOST}"
+        printf "  ${BOLD}数据库端口${NC} [${PG_PORT}]: "
+        read -r RP; PG_PORT="${RP:-$PG_PORT}"
+        PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+
+        spinner_start "正在测试远程连接..."
+        if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+            spinner_ok "远程数据库连接成功"
+            DB_READY=true
+        else
+            spinner_stop
+            warn "无法连接远程数据库"
+            echo -e "  请确保 pg_hba.conf 允许 ${PG_HOST} 的连接"
+            echo -e "  连接串: ${GRAY}${PG_URL}${NC}"
+            echo ""
+            confirm "已手动准备好数据库，继续?" "n"
+            read -r continue_anyway
+            [ "${continue_anyway,,}" = "y" ] || [ "${continue_anyway,,}" = "yes" ] || exit 1
+            DB_READY=true
+        fi
+    fi
+
+    if ! $DB_READY; then
+        spinner_err "数据库初始化失败"
+        echo "  请手动创建用户和数据库后重试："
+        echo "  sudo -u postgres psql -c \"CREATE ROLE ${PG_USER} LOGIN PASSWORD 'xxx';\""
+        echo "  sudo -u postgres psql -c \"CREATE DATABASE ${PG_DB} OWNER ${PG_USER};\""
+        exit 1
+    fi
+
     # 写入 config.toml
-    # 使用 sed 替换占位值
     sed -i "s|url = \"postgres://localhost:5432/rustbill\"|url = \"${PG_URL}\"|" "${INSTALL_DIR}/config.toml"
 
     echo ""
