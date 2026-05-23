@@ -687,7 +687,7 @@ else
     box_empty
     box_line "  ├─ rustbill-server       服务端程序 (内嵌 Admin SPA)"
     box_line "  ├─ rustbill-cli          命令行管理工具 (含 TUI)"
-    box_line "  ├─ plugins/              插件目录 (Provider/Gateway/Notifier)"
+    box_line "  ├─ plugins/              插件目录 (Rune 脚本 .rn 文件)"
     box_line "  ├─ consumer-dist/        客户前台 SPA (独立部署)"
     box_line "  └─ config.example.toml   配置模板"
     box_bottom
