@@ -8,6 +8,9 @@
 
 <p align="center">
   <a href="https://github.com/zyxisme/rustbill-releases/releases"><img src="https://img.shields.io/github/v/release/zyxisme/rustbill-releases?style=for-the-badge" alt="Release"></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-blue?style=for-the-badge" alt="Platform">
 </p>
 
