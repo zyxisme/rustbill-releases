@@ -7,11 +7,8 @@
 <p align="center">基于 Rust 的分布式云服务器财务管理系统 — 插件化架构，支持多供应商、多支付网关、多渠道通知。</p>
 
 <p align="center">
-  <a href="https://github.com/zyxisme/rustbill-releases/releases"><img src="https://img.shields.io/github/v/release/zyxisme/rustbill-releases?label=latest&color=green" alt="Release"></a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-blue" alt="Platform">
+  <a href="https://github.com/zyxisme/rustbill-releases/releases"><img src="https://img.shields.io/github/v/release/zyxisme/rustbill-releases?style=for-the-badge" alt="Release"></a>
+  <img src="https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-blue?style=for-the-badge" alt="Platform">
 </p>
 
 ---
