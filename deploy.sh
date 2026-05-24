@@ -244,8 +244,17 @@ command -v curl &>/dev/null || { err "需要 curl，请先安装"; exit 1; }
 command -v tar  &>/dev/null || { err "需要 tar，请先安装";  exit 1; }
 
 ARCH=$(uname -m)
+CPU_LEVEL=""
 case "$ARCH" in
-    x86_64)        RUSTBILL_ARCH="linux-x86_64" ;;
+    x86_64)
+        if grep -q 'avx2' /proc/cpuinfo 2>/dev/null; then
+            RUSTBILL_ARCH="linux-x86_64-v3"
+            CPU_LEVEL="x86-64-v3 (AVX2)"
+        else
+            RUSTBILL_ARCH="linux-x86_64-v2"
+            CPU_LEVEL="x86-64-v2 (SSE4.2)"
+        fi
+        ;;
     aarch64|arm64) RUSTBILL_ARCH="linux-arm64" ;;
     *) err "不支持的架构: $ARCH"; echo "  支持的架构: x86_64, aarch64"; exit 1 ;;
 esac
@@ -255,6 +264,7 @@ OS=$(uname -s)
 box_top
 box_line "$(printf "%-10s  %s" "系统:" "$(uname -s) $(uname -r)")"
 box_line "$(printf "%-10s  %s" "架构:" "${BOLD}${RUSTBILL_ARCH}${NC}")"
+[ -n "$CPU_LEVEL" ] && box_line "$(printf "%-10s  %s" "CPU 级别:" "${GREEN}${CPU_LEVEL}${NC}")"
 box_line "$(printf "%-10s  %s" "Shell:" "${BASH_VERSION%%(*}")"
 command -v jq &>/dev/null && box_line "$(printf "%-10s  ${GREEN}已安装${NC}" "jq:")" || box_line "$(printf "%-10s  ${YELLOW}未安装 (基本模式)${NC}" "jq:")"
 box_bottom
