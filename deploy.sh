@@ -909,7 +909,12 @@ SQLEOF
     read -r input_path
     if [ -n "$input_path" ]; then
         ADMIN_PATH="$input_path"
-        sed -i "s|# admin_path = \"/admin\"|admin_path = \"${ADMIN_PATH}\"|" "${INSTALL_DIR}/config.toml"
+    fi
+    # Always write admin_path (even if default), handling both commented and uncommented forms
+    if grep -q '^# admin_path' "${INSTALL_DIR}/config.toml" 2>/dev/null; then
+        sed -i "s|^# admin_path.*|admin_path = \"${ADMIN_PATH}\"|" "${INSTALL_DIR}/config.toml"
+    elif grep -q '^admin_path' "${INSTALL_DIR}/config.toml" 2>/dev/null; then
+        sed -i "s|^admin_path.*|admin_path = \"${ADMIN_PATH}\"|" "${INSTALL_DIR}/config.toml"
     fi
 
     # ── 2.4 域名 (Caddy) ─────────────────────────────────────────────────────
