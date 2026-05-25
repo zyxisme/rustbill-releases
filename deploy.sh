@@ -1124,14 +1124,22 @@ SQLEOF
 # HTTP/3 + TLS 自动管理 (Let's Encrypt)
 
 ${RUSTBILL_DOMAIN} {
+    # Health check — pass to backend
+    handle /health {
+        reverse_proxy 127.0.0.1:50051
+    }
+    handle /ready {
+        reverse_proxy 127.0.0.1:50051
+    }
+
     # gRPC-Web → h2c bridge to tonic backend
     handle /rustbill.* {
-        reverse_proxy h2c://127.0.0.1:50051
+        reverse_proxy 127.0.0.1:50051
     }
 
     # Admin SPA — also use h2c, avoid HTTP/1.1→HTTP/2 translation
     handle ${ADMIN_PATH:-/admin}* {
-        reverse_proxy h2c://127.0.0.1:50051
+        reverse_proxy 127.0.0.1:50051
     }
 
     # Customer SPA — static files (standalone frontend)
