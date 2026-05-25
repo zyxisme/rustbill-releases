@@ -858,7 +858,7 @@ if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
                 DB_READY=true
             fi
         elif [ "$DB_MODE" = "local_existing" ]; then
-            PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
+            PG_PASS=$(openssl rand -hex 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
             echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
             PG_HOST="localhost"
             PG_PORT="5432"
@@ -888,7 +888,7 @@ if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
             fi
         else
             # local_new: 自动创建角色和数据库
-            PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
+            PG_PASS=$(openssl rand -hex 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
             echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
             PG_HOST="localhost"
             PG_PORT="5432"
@@ -986,7 +986,7 @@ SQLEOF
     # ── 2.2 JWT 密钥 ──────────────────────────────────────────────────────────
     step_header "2.2" "$TOTAL_STEPS" "安全配置"
 
-    JWT_SECRET=$(openssl rand -base64 48 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 64)
+    JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 64)
     sed -i "s|secret = \"\"|secret = \"${JWT_SECRET}\"|" "${INSTALL_DIR}/config.toml"
     ok "JWT 密钥已自动生成"
     echo -e "  ${GRAY}▸ ${JWT_SECRET:0:32}...${NC}"
@@ -1000,7 +1000,7 @@ SQLEOF
     read -rs ADMIN_PASS
     echo ""
     if [ -z "$ADMIN_PASS" ]; then
-        ADMIN_PASS=$(openssl rand -base64 12 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
+        ADMIN_PASS=$(openssl rand -hex 8 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
         echo -e "  ${YELLOW}⚠${NC}  未输入密码，已自动生成: ${BOLD}${ADMIN_PASS}${NC}"
         echo -e "  ${YELLOW}⚠${NC}  请务必记住此密码！"
         echo ""
