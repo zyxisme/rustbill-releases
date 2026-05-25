@@ -7,6 +7,9 @@ if ! exec < /dev/tty; then
     NON_INTERACTIVE=true
 fi
 
+SCRIPT_VERSION="20260526"
+DEPLOY_SCRIPT_URL="https://raw.githubusercontent.com/zyxisme/rustbill-releases/main/deploy.sh"
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                    RustBill 部署/更新脚本                                    ║
 # ║                    交互式安装 · 一键升级 · 安全回滚                           ║
@@ -172,6 +175,8 @@ show_banner() {
     echo ""
     center "基于 Rust 的分布式云服务器财务管理系统" "${GRAY}"
     center "插件化架构 · 多供应商 · 多支付网关 · 多渠道通知" "${DIM}"
+    echo ""
+    center "部署脚本版本: ${SCRIPT_VERSION}  ${GRAY}|${NC}  更新: ${DEPLOY_SCRIPT_URL}" "${DIM}"
     echo ""
     hr "═" "${CYAN}"
     echo ""
