@@ -343,7 +343,7 @@ else
         [ "$tag" = "$LATEST_VERSION" ] && marker=" ${B_GREEN}◀ latest${NC}"
         short_date="${date:0:10}"
         printf "  ${B_BLUE}%4d.${NC}  ${BOLD}%-12s${NC}  ${GRAY}%-16s${NC}  %s%s\n" \
-            "$idx" "$tag" "${short_date:- }" "${name:$tag}" "$marker"
+            "$idx" "$tag" "${short_date:- }" "${name:${#tag}}" "$marker"
         idx=$((idx + 1))
     done < /tmp/rustbill-versions-$$.txt
     rm -f /tmp/rustbill-versions-$$.txt
