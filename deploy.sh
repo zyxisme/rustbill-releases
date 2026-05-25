@@ -2,7 +2,10 @@
 set -euo pipefail
 
 # curl | bash 管道下 stdin 被脚本内容占用，重定向到终端确保 read 可交互
-exec < /dev/tty 2>/dev/null || true
+if ! exec < /dev/tty; then
+    warn "无法访问终端 (/dev/tty)，切换为非交互模式"
+    NON_INTERACTIVE=true
+fi
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                    RustBill 部署/更新脚本                                    ║
@@ -303,6 +306,11 @@ if [ -n "$FORCE_VERSION" ]; then
     VERSION="v${VERSION}"
     ok "使用指定版本: ${BOLD}${VERSION}${NC}"
 elif $NON_INTERACTIVE; then
+    if [ -z "$LATEST_VERSION" ]; then
+        err "无法获取最新版本号（GitHub API 不可达或仓库无发布版本）"
+        echo "  请使用 --version 参数手动指定版本: bash deploy.sh --version v0.1.8"
+        exit 1
+    fi
     VERSION="$LATEST_VERSION"
     ok "自动选择最新版本: ${BOLD}${VERSION}${NC}"
 else
@@ -337,31 +345,44 @@ else
 
     echo ""
     hr "─" "${DIM}"
-    printf "  ${BOLD}选择版本${NC} [1-$((idx - 1)) / 回车=最新版 / q=退出]: "
 
-    read -r choice
-    if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
-        echo -e "\n  ${GRAY}已取消${NC}"
-        exit 0
-    fi
-    if [ -z "$choice" ]; then
-        VERSION="$LATEST_VERSION"
-    elif [[ "$choice" =~ ^[0-9]+$ ]]; then
-        # Map menu number to tag
-        selected=$(echo "$RELEASES_JSON" | jq -r ".[$((choice - 1))].tag_name" 2>/dev/null || true)
-        if [ -n "$selected" ]; then
-            VERSION="$selected"
-        else
-            warn "无效选择，使用最新版本"
-            VERSION="$LATEST_VERSION"
+    # 版本列表为空时回退到手动输入
+    if [ "$idx" -eq 1 ]; then
+        warn "未获取到版本列表（GitHub API 不可达或仓库无发布版本）"
+        echo ""
+        printf "  ${BOLD}请手动输入版本号${NC} (如 v0.1.8): "
+        read -r manual_version
+        if [ -z "$manual_version" ]; then
+            err "未输入版本号，退出"; exit 1
         fi
-    else
-        VERSION="${choice#v}"
+        VERSION="${manual_version#v}"
         VERSION="v${VERSION}"
+    else
+        printf "  ${BOLD}选择版本${NC} [1-$((idx - 1)) / 回车=最新版 / q=退出]: "
+
+        read -r choice
+        if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
+            echo -e "\n  ${GRAY}已取消${NC}"
+            exit 0
+        fi
+        if [ -z "$choice" ]; then
+            VERSION="$LATEST_VERSION"
+        elif [[ "$choice" =~ ^[0-9]+$ ]]; then
+            # Map menu number to tag
+            selected=$(echo "$RELEASES_JSON" | jq -r ".[$((choice - 1))].tag_name" 2>/dev/null || true)
+            if [ -n "$selected" ]; then
+                VERSION="$selected"
+            else
+                warn "无效选择，使用最新版本"
+                VERSION="$LATEST_VERSION"
+            fi
+        else
+            VERSION="${choice#v}"
+            VERSION="v${VERSION}"
+        fi
     fi
 
     ok "已选择版本: ${BOLD}${VERSION}${NC}"
-
     # 显示所选版本的 release notes 摘要 (如果有)
     if command -v jq &>/dev/null; then
         rn=$(echo "$RELEASES_JSON" | jq -r ".[] | select(.tag_name == \"$VERSION\") | .body" 2>/dev/null | head -10 || true)
