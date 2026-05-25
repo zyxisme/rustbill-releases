@@ -310,10 +310,10 @@ else
     # 构建版本列表
     echo "" > /tmp/rustbill-versions-$$.txt
     if command -v jq &>/dev/null; then
-        echo "$RELEASES_JSON" | jq -r '.[] | "\(.tag_name)|\(.published_at // "")|\(.name // .tag_name)"' > /tmp/rustbill-versions-$$.txt
+        echo "$RELEASES_JSON" | jq -r '.[] | "\(.tag_name)|\(.published_at // "")|\(.name // .tag_name)"' > /tmp/rustbill-versions-$$.txt || true
     else
-        # grep fallback: 无 jq 时提取 tag_name
-        echo "$RELEASES_JSON" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | while read -r tag; do
+        # grep fallback: pipefail-safe (grep 无匹配时 exit 1 不杀脚本)
+        { echo "$RELEASES_JSON" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true; } | while read -r tag; do
             echo "${tag}||${tag}"
         done > /tmp/rustbill-versions-$$.txt
     fi
@@ -561,6 +561,12 @@ fi
 step_header 6 "$TOTAL_STEPS" "下载 & 安全校验"
 
 TARBALL="rustbill-${RUSTBILL_ARCH}.tar.gz"
+
+if [ -z "$VERSION" ]; then
+    err "未选择版本，无法下载"
+    exit 1
+fi
+
 DOWNLOAD_URL="${DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
 
 echo ""
@@ -568,14 +574,13 @@ echo -e "  ${BOLD}版本:${NC} ${VERSION}  ${GRAY}│${NC}  ${BOLD}架构:${NC} 
 echo -e "  ${GRAY}${DOWNLOAD_URL}${NC}"
 echo ""
 
-# 分两阶段: 先 spinner 等 DNS/302, curl --progress-bar 接管后显示进度条
-spinner_start "正在连接下载服务器..."
+# curl --progress-bar 自己管理进度条，不加 spinner 避免终端输出冲突
 if curl -fL --progress-bar -o "/tmp/${TARBALL}" "$DOWNLOAD_URL"; then
-    spinner_ok "下载完成"
-else
-    spinner_err "下载失败"
     echo ""
-    err "请确认版本 ${VERSION} 存在且包含 ${RUSTBILL_ARCH} 架构"
+    ok "下载完成"
+else
+    echo ""
+    err "下载失败 — 请确认版本 ${VERSION} 存在且包含 ${RUSTBILL_ARCH} 架构"
     if $IS_UPDATING && [ -n "$BACKUP_DIR" ]; then
         warn "备份保存在 ${BACKUP_DIR}，可使用 rollback.sh 回滚"
     fi
