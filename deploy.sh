@@ -974,7 +974,7 @@ SQLEOF
         fi
 
         # 写入 config.toml
-        sed -i "s|url = "postgres://localhost:5432/rustbill"|url = "${PG_URL}"|" "${INSTALL_DIR}/config.toml"
+        sed -i "s|url = \"postgres://localhost:5432/rustbill\"|url = \"${PG_URL}\"|" "${INSTALL_DIR}/config.toml"
 
         echo ""
         box_top
