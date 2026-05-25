@@ -311,6 +311,11 @@ else
     echo "" > /tmp/rustbill-versions-$$.txt
     if command -v jq &>/dev/null; then
         echo "$RELEASES_JSON" | jq -r '.[] | "\(.tag_name)|\(.published_at // "")|\(.name // .tag_name)"' > /tmp/rustbill-versions-$$.txt
+    else
+        # grep fallback: 无 jq 时提取 tag_name
+        echo "$RELEASES_JSON" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | while read -r tag; do
+            echo "${tag}||${tag}"
+        done > /tmp/rustbill-versions-$$.txt
     fi
 
     echo -e "  ${BOLD}可用版本${NC}"
@@ -558,23 +563,29 @@ step_header 6 "$TOTAL_STEPS" "下载 & 安全校验"
 TARBALL="rustbill-${RUSTBILL_ARCH}.tar.gz"
 DOWNLOAD_URL="${DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
 
-info "下载: ${GRAY}${DOWNLOAD_URL}${NC}"
+echo ""
+echo -e "  ${BOLD}版本:${NC} ${VERSION}  ${GRAY}│${NC}  ${BOLD}架构:${NC} ${RUSTBILL_ARCH}"
+echo -e "  ${GRAY}${DOWNLOAD_URL}${NC}"
 echo ""
 
-# 带原生进度条的下载
-curl -fL --progress-bar -o "/tmp/${TARBALL}" "$DOWNLOAD_URL" || {
-    err "下载失败。请确认版本 ${VERSION} 存在且包含 ${RUSTBILL_ARCH} 架构。"
+# 分两阶段: 先 spinner 等 DNS/302, curl --progress-bar 接管后显示进度条
+spinner_start "正在连接下载服务器..."
+if curl -fL --progress-bar -o "/tmp/${TARBALL}" "$DOWNLOAD_URL"; then
+    spinner_ok "下载完成"
+else
+    spinner_err "下载失败"
+    echo ""
+    err "请确认版本 ${VERSION} 存在且包含 ${RUSTBILL_ARCH} 架构"
     if $IS_UPDATING && [ -n "$BACKUP_DIR" ]; then
         warn "备份保存在 ${BACKUP_DIR}，可使用 rollback.sh 回滚"
     fi
     exit 1
-}
-echo ""
+fi
 
 # 获取文件大小
 FILE_SIZE=$(stat -c%s "/tmp/${TARBALL}" 2>/dev/null || stat -f%z "/tmp/${TARBALL}" 2>/dev/null || echo 0)
 FILE_SIZE_MB=$(awk "BEGIN { printf \"%.1f\", $FILE_SIZE / 1048576 }")
-ok "下载完成 (${FILE_SIZE_MB} MB)"
+echo -e "  ${GRAY}▸ 文件大小: ${FILE_SIZE_MB} MB${NC}"
 
 # SHA256 校验
 if command -v sha256sum &>/dev/null && command -v jq &>/dev/null; then
@@ -733,58 +744,150 @@ if ! $IS_UPDATING && ! $NON_INTERACTIVE; then
         [ -n "$PG_VERSION" ] && PG_LOCAL=true
     fi
 
+    echo ""
+    echo -e "  ${BOLD}数据库部署方式${NC}"
+    echo ""
     if $PG_LOCAL; then
-        echo -e "  ${GREEN}✔${NC} 检测到本地 PostgreSQL ${PG_VERSION}"
+        echo -e "    ${B_BLUE}1.${NC} 本地新建 — 自动创建 PostgreSQL 角色和数据库 (推荐)"
+        echo -e "    ${B_BLUE}2.${NC} 本地已有 — 使用已存在的数据库，仅测试连接"
+        echo -e "    ${B_BLUE}3.${NC} 远程数据库 — 手动输入远程连接信息"
+        echo -e "  ${GRAY}检测到本地 PostgreSQL ${PG_VERSION}${NC}"
     else
-        echo -e "  ${GRAY}ℹ${NC}  未检测到本地 psql，将手动输入数据库连接信息"
-        echo -e "  ${GRAY}▸${NC} 安装指南: https://www.postgresql.org/download/"
+        echo -e "    ${B_BLUE}1.${NC} 远程数据库 — 手动输入连接信息"
+        echo -e "    ${B_BLUE}2.${NC} 跳过 — 稍后手动编辑 config.toml"
+        echo -e "  ${GRAY}未检测到本地 PostgreSQL${NC}"
     fi
     echo ""
 
-    printf "  ${BOLD}数据库名称${NC} [rustbill]: "
-    read -r PG_DB; PG_DB="${PG_DB:-rustbill}"
-
-    printf "  ${BOLD}数据库用户${NC} [rustbill]: "
-    read -r PG_USER; PG_USER="${PG_USER:-rustbill}"
-
-    # 自动生成密码
-    PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
-    echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
-
-    PG_HOST="localhost"
-    PG_PORT="5432"
-    PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
-
-    # ── 自动初始化数据库 ────────────────────────────────────────────────────
-    echo ""
-    spinner_start "正在初始化数据库..."
-
-    DB_READY=false
-
     if $PG_LOCAL; then
-        # 尝试 sudo -u postgres (root 或有 sudo 权限)
-        PG_CMD=""
-        if $IS_ROOT; then
-            PG_CMD="su - postgres -c"
-        elif command -v sudo &>/dev/null && sudo -n -u postgres true 2>/dev/null; then
-            PG_CMD="sudo -u postgres"
-        fi
+        default_choice="1"
+        printf "  ${BOLD}请选择${NC} [${default_choice}]: "
+        read -r db_choice
+        db_choice="${db_choice:-${default_choice}}"
+        case "$db_choice" in
+            1) DB_MODE="local_new" ;;
+            2) DB_MODE="local_existing" ;;
+            3) DB_MODE="remote" ;;
+            *) DB_MODE="local_new" ;;
+        esac
+    else
+        default_choice="1"
+        printf "  ${BOLD}请选择${NC} [${default_choice}]: "
+        read -r db_choice
+        db_choice="${db_choice:-${default_choice}}"
+        case "$db_choice" in
+            1) DB_MODE="remote" ;;
+            2) DB_MODE="skip" ;;
+            *) DB_MODE="remote" ;;
+        esac
+    fi
 
-        if [ -n "$PG_CMD" ]; then
-            # 通过 postgres 系统用户免密码操作
-            spinner_stop
-            spinner_start "正在通过 postgres 用户创建角色和数据库..."
+    if [ "$DB_MODE" = "skip" ]; then
+        warn "跳过数据库配置，请稍后手动编辑 config.toml"
+        DB_READY=true
+        PG_URL="postgres://localhost:5432/rustbill"
+        PG_PASS=""
+    else
+        echo ""
+        printf "  ${BOLD}数据库名称${NC} [rustbill]: "
+        read -r PG_DB; PG_DB="${PG_DB:-rustbill}"
 
-            $PG_CMD psql -c "SELECT 1" &>/dev/null 2>&1 || {
-                # 尝试启动 PostgreSQL
-                if $IS_ROOT; then
-                    systemctl start postgresql &>/dev/null 2>&1 || service postgresql start &>/dev/null 2>&1 || true
-                    sleep 2
+        printf "  ${BOLD}数据库用户${NC} [rustbill]: "
+        read -r PG_USER; PG_USER="${PG_USER:-rustbill}"
+
+        if [ "$DB_MODE" = "remote" ]; then
+            printf "  ${BOLD}数据库密码${NC}: "
+            read -rs PG_PASS
+            echo ""
+            if [ -z "$PG_PASS" ]; then
+                err "远程数据库必须输入密码"; exit 1
+            fi
+
+            printf "  ${BOLD}数据库主机${NC} [localhost]: "
+            read -r PG_HOST; PG_HOST="${PG_HOST:-localhost}"
+
+            printf "  ${BOLD}数据库端口${NC} [5432]: "
+            read -r PG_PORT; PG_PORT="${PG_PORT:-5432}"
+            PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+
+            echo ""
+            spinner_start "正在测试远程数据库连接..."
+            if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                spinner_ok "远程数据库连接成功"
+                DB_READY=true
+            else
+                spinner_stop
+                err "无法连接远程数据库"
+                echo -e "  请确保 pg_hba.conf 允许连接"
+                echo -e "  连接串: ${GRAY}${PG_URL}${NC}"
+                echo ""
+                confirm "已手动准备好数据库，继续?" "n"
+                read -r continue_anyway
+                [ "${continue_anyway,,}" = "y" ] || [ "${continue_anyway,,}" = "yes" ] || exit 1
+                DB_READY=true
+            fi
+        elif [ "$DB_MODE" = "local_existing" ]; then
+            PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
+            echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
+            PG_HOST="localhost"
+            PG_PORT="5432"
+            PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+
+            echo ""
+            spinner_start "正在测试本地数据库连接..."
+            if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                spinner_ok "数据库连接成功 (使用已有数据库)"
+                DB_READY=true
+            elif sudo -u postgres psql -c "SELECT 1" &>/dev/null 2>&1; then
+                # 数据库存在但密码不对，通过 postgres 用户重置密码
+                sudo -u postgres psql -c "ALTER ROLE "${PG_USER}" PASSWORD '${PG_PASS}';" &>/dev/null 2>&1
+                if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                    spinner_ok "数据库连接成功 (密码已重置)"
+                    DB_READY=true
+                else
+                    spinner_err "数据库连接失败"
+                    echo -e "  请确认数据库 ${PG_DB} 和用户 ${PG_USER} 已存在"
+                    echo -e "  手动创建: sudo -u postgres psql -c "CREATE ROLE ${PG_USER} LOGIN PASSWORD 'xxx';""
+                    echo -e "  手动创建: sudo -u postgres psql -c "CREATE DATABASE ${PG_DB} OWNER ${PG_USER};""
+                    exit 1
                 fi
-            }
+            else
+                spinner_err "数据库连接失败，且无法通过 postgres 用户重置密码"
+                exit 1
+            fi
+        else
+            # local_new: 自动创建角色和数据库
+            PG_PASS=$(openssl rand -base64 16 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20)
+            echo -e "  ${BOLD}数据库密码${NC}: ${GRAY}已自动生成${NC}"
+            PG_HOST="localhost"
+            PG_PORT="5432"
+            PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
 
-            set +e
-            $PG_CMD psql &>/dev/null <<SQLEOF
+            echo ""
+            spinner_start "正在初始化数据库..."
+
+            PG_CMD=""
+            if $IS_ROOT; then
+                PG_CMD="su - postgres -c"
+            elif command -v sudo &>/dev/null && sudo -n -u postgres true 2>/dev/null; then
+                PG_CMD="sudo -u postgres"
+            fi
+
+            DB_READY=false
+
+            if [ -n "$PG_CMD" ]; then
+                spinner_stop
+                spinner_start "正在通过 postgres 用户创建角色和数据库..."
+
+                $PG_CMD psql -c "SELECT 1" &>/dev/null 2>&1 || {
+                    if $IS_ROOT; then
+                        systemctl start postgresql &>/dev/null 2>&1 || service postgresql start &>/dev/null 2>&1 || true
+                        sleep 2
+                    fi
+                }
+
+                set +e
+                $PG_CMD psql &>/dev/null <<SQLEOF
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${PG_USER}') THEN
@@ -804,76 +907,50 @@ GRANT ALL PRIVILEGES ON DATABASE "${PG_DB}" TO "${PG_USER}";
 \c "${PG_DB}"
 GRANT ALL ON SCHEMA public TO "${PG_USER}";
 SQLEOF
-            PG_INIT_EXIT=$?
-            set -e
+                PG_INIT_EXIT=$?
+                set -e
 
-            if [ $PG_INIT_EXIT -eq 0 ]; then
-                # 测试连接
-                if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
-                    spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
-                    DB_READY=true
+                if [ $PG_INIT_EXIT -eq 0 ]; then
+                    if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                        spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
+                        DB_READY=true
+                    fi
                 fi
+            fi
+
+            # 回退：用 peer 认证直连
+            if ! $DB_READY; then
+                spinner_stop
+                spinner_start "尝试 peer 认证..."
+                if sudo -u "$PG_USER" psql -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                    spinner_ok "peer 认证连接成功"
+                    DB_READY=true
+                elif sudo -u postgres psql -c "CREATE ROLE "${PG_USER}" LOGIN PASSWORD '${PG_PASS}'; CREATE DATABASE "${PG_DB}" OWNER "${PG_USER}"; GRANT ALL PRIVILEGES ON DATABASE "${PG_DB}" TO "${PG_USER}";" &>/dev/null 2>&1; then
+                    if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
+                        spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
+                        DB_READY=true
+                    fi
+                fi
+            fi
+
+            if ! $DB_READY; then
+                spinner_err "数据库初始化失败"
+                echo "  请手动创建用户和数据库后重试："
+                echo "  sudo -u postgres psql -c "CREATE ROLE ${PG_USER} LOGIN PASSWORD 'xxx';""
+                echo "  sudo -u postgres psql -c "CREATE DATABASE ${PG_DB} OWNER ${PG_USER};""
+                exit 1
             fi
         fi
 
-        # 回退：用 peer 认证直连
-        if ! $DB_READY; then
-            spinner_stop
-            spinner_start "尝试 peer 认证..."
-            if sudo -u "$PG_USER" psql -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
-                spinner_ok "peer 认证连接成功"
-                DB_READY=true
-            elif sudo -u postgres psql -c "CREATE ROLE \"${PG_USER}\" LOGIN PASSWORD '${PG_PASS}'; CREATE DATABASE \"${PG_DB}\" OWNER \"${PG_USER}\"; GRANT ALL PRIVILEGES ON DATABASE \"${PG_DB}\" TO \"${PG_USER}\";" &>/dev/null 2>&1; then
-                if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
-                    spinner_ok "数据库 ${PG_DB} 和用户 ${PG_USER} 已就绪"
-                    DB_READY=true
-                fi
-            fi
-        fi
+        # 写入 config.toml
+        sed -i "s|url = "postgres://localhost:5432/rustbill"|url = "${PG_URL}"|" "${INSTALL_DIR}/config.toml"
+
+        echo ""
+        box_top
+        box_line "$(printf "%-14s  ${GREEN}✔${NC}" "数据库配置:")"
+        box_line "  ${GRAY}${PG_URL}${NC}"
+        box_bottom
     fi
-
-    # 远程数据库：直接测试连接
-    if ! $DB_READY && ! $PG_LOCAL; then
-        spinner_stop
-        printf "  ${BOLD}数据库主机${NC} [${PG_HOST}]: "
-        read -r RH; PG_HOST="${RH:-$PG_HOST}"
-        printf "  ${BOLD}数据库端口${NC} [${PG_PORT}]: "
-        read -r RP; PG_PORT="${RP:-$PG_PORT}"
-        PG_URL="postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
-
-        spinner_start "正在测试远程连接..."
-        if PGPASSWORD="$PG_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -c "SELECT 1" &>/dev/null 2>&1; then
-            spinner_ok "远程数据库连接成功"
-            DB_READY=true
-        else
-            spinner_stop
-            warn "无法连接远程数据库"
-            echo -e "  请确保 pg_hba.conf 允许 ${PG_HOST} 的连接"
-            echo -e "  连接串: ${GRAY}${PG_URL}${NC}"
-            echo ""
-            confirm "已手动准备好数据库，继续?" "n"
-            read -r continue_anyway
-            [ "${continue_anyway,,}" = "y" ] || [ "${continue_anyway,,}" = "yes" ] || exit 1
-            DB_READY=true
-        fi
-    fi
-
-    if ! $DB_READY; then
-        spinner_err "数据库初始化失败"
-        echo "  请手动创建用户和数据库后重试："
-        echo "  sudo -u postgres psql -c \"CREATE ROLE ${PG_USER} LOGIN PASSWORD 'xxx';\""
-        echo "  sudo -u postgres psql -c \"CREATE DATABASE ${PG_DB} OWNER ${PG_USER};\""
-        exit 1
-    fi
-
-    # 写入 config.toml
-    sed -i "s|url = \"postgres://localhost:5432/rustbill\"|url = \"${PG_URL}\"|" "${INSTALL_DIR}/config.toml"
-
-    echo ""
-    box_top
-    box_line "$(printf "%-14s  ${GREEN}✔${NC}" "数据库配置:")"
-    box_line "  ${GRAY}${PG_URL}${NC}"
-    box_bottom
 
     # ── 2.2 JWT 密钥 ──────────────────────────────────────────────────────────
     step_header "2.2" "$TOTAL_STEPS" "安全配置"
@@ -1016,18 +1093,21 @@ SQLEOF
 # HTTP/3 + TLS 自动管理 (Let's Encrypt)
 
 ${RUSTBILL_DOMAIN} {
-    # gRPC-Web → gRPC bridge to tonic backend
+    # gRPC-Web → h2c bridge to tonic backend
     handle /rustbill.* {
-        reverse_proxy h2c://127.0.0.1:50051 {
-            transport http {
-                versions h2c
-            }
-        }
+        reverse_proxy h2c://127.0.0.1:50051
     }
 
-    # Admin SPA is embedded in the server
+    # Admin SPA — also use h2c, avoid HTTP/1.1→HTTP/2 translation
+    handle ${ADMIN_PATH:-/admin}* {
+        reverse_proxy h2c://127.0.0.1:50051
+    }
+
+    # Customer SPA — static files (standalone frontend)
     handle {
-        reverse_proxy 127.0.0.1:50051
+        root * ${INSTALL_DIR}/consumer-dist
+        try_files {path} /index.html
+        file_server
     }
 
     # Security headers
@@ -1037,7 +1117,7 @@ ${RUSTBILL_DOMAIN} {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
 
-    # Logs (optional)
+    # Logs
     log {
         output file /var/log/caddy/rustbill.log
     }
