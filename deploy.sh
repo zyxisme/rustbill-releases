@@ -7,7 +7,7 @@ if ! exec < /dev/tty; then
     NON_INTERACTIVE=true
 fi
 
-SCRIPT_VERSION="20260526"
+SCRIPT_VERSION="20260527"
 DEPLOY_SCRIPT_URL="https://raw.githubusercontent.com/zyxisme/rustbill-releases/main/deploy.sh"
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -217,12 +217,16 @@ show_menu() {
 UPDATE_ONLY=false
 NON_INTERACTIVE=false
 FORCE_VERSION=""
+RUSTBILL_DOMAIN=""
+NOTIFY_EMAIL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --update|-u) UPDATE_ONLY=true; shift ;;
         --yes|-y)    NON_INTERACTIVE=true; shift ;;
         --version|-v) FORCE_VERSION="$2"; shift 2 ;;
+        --domain|-d)   RUSTBILL_DOMAIN="$2"; shift 2 ;;
+        --email|-e)    NOTIFY_EMAIL="$2"; shift 2 ;;
         --help|-h)
             echo "用法: $0 [选项]"
             echo ""
@@ -230,6 +234,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --update, -u     仅更新模式（跳过安装流程，直接升级已有实例）"
             echo "  --yes, -y        非交互模式（自动选择最新版本、跳过确认）"
             echo "  --version, -v N  指定版本号（如 v1.0.0）"
+            echo "  --domain, -d DOM 域名（自动配置 Caddy 反向代理 + Let's Encrypt）"
+            echo "  --email, -e EMAIL 通知邮箱（用于 Let's Encrypt 证书通知）"
             echo "  --help, -h       显示此帮助"
             exit 0
             ;;
@@ -1062,140 +1068,45 @@ SQLEOF
     [ -n "$ADMIN_PATH" ] && [ "$ADMIN_PATH" != "/admin" ] && box_line "  管理路径:  ${BOLD}${ADMIN_PATH}${NC}"
     box_bottom
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Caddy 安装 & 配置
-    # ═══════════════════════════════════════════════════════════════════════════
+fi
 
+# ── 非交互模式：基础配置种子 ──────────────────────────────────────────────────
+# 交互模式下向导已处理，非交互模式下自动生成最小配置
+if $NON_INTERACTIVE && ! $IS_UPDATING && [ ! -f "${INSTALL_DIR}/config.toml" ]; then
+    echo ""
+    step_header "~" "$TOTAL_STEPS" "自动配置"
+    cp "${INSTALL_DIR}/config.example.toml" "${INSTALL_DIR}/config.toml"
+
+    # 自动生成 JWT 密钥
+    JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 64)
+    sed -i "s|secret = \"\"|secret = \"${JWT_SECRET}\"|" "${INSTALL_DIR}/config.toml"
+    ok "JWT 密钥已自动生成"
+    echo -e "  ${GRAY}▸ ${JWT_SECRET:0:32}...${NC}"
+
+    # 自动生成管理员密码
+    ADMIN_PASS=$(openssl rand -hex 8 2>/dev/null || cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
+    sed -i "s|admin_password = \"CHANGE_ME_TO_A_STRONG_PASSWORD\"|admin_password = \"${ADMIN_PASS}\"|" "${INSTALL_DIR}/config.toml"
+    ok "管理员密码已自动生成"
+    echo -e "  ${YELLOW}⚠${NC}  管理员: ${BOLD}admin${NC}  密码: ${BOLD}${ADMIN_PASS}${NC}"
+
+    # 域名 / 邮箱 (如果通过 --domain/--email 传入)
     if [ -n "$RUSTBILL_DOMAIN" ]; then
-        echo ""
-        step_header "2.4" "$TOTAL_STEPS" "Caddy 反向代理"
-
-        CADDY_INSTALLED=false
-        if command -v caddy &>/dev/null; then
-            CADDY_INSTALLED=true
-            ok "Caddy 已安装: $(caddy version 2>/dev/null | head -1)"
-        else
-            warn "Caddy 未安装"
-            echo ""
-            echo -e "  Caddy 是推荐的反向代理，支持自动 HTTPS (HTTP/3 QUIC)。"
-            confirm "是否自动安装 Caddy?" "y"
-            read -r install_caddy
-            if [ "${install_caddy,,}" = "y" ] || [ "${install_caddy,,}" = "yes" ]; then
-
-                # 检测包管理器
-                CADDY_INSTALL_CMD=""
-                if command -v apt &>/dev/null; then
-                    spinner_start "通过 apt 安装 Caddy..."
-                    if sudo apt update -qq &>/dev/null && sudo apt install -y -qq caddy &>/dev/null; then
-                        spinner_ok "Caddy 安装完成"
-                        CADDY_INSTALLED=true
-                    else
-                        spinner_err "apt 安装失败"
-                    fi
-                fi
-
-                if ! $CADDY_INSTALLED && command -v dnf &>/dev/null; then
-                    spinner_start "通过 dnf 安装 Caddy..."
-                    if sudo dnf install -y caddy &>/dev/null; then
-                        spinner_ok "Caddy 安装完成"
-                        CADDY_INSTALLED=true
-                    else
-                        spinner_err "dnf 安装失败"
-                    fi
-                fi
-
-                if ! $CADDY_INSTALLED; then
-                    warn "自动安装失败，请手动安装 Caddy: https://caddyserver.com/docs/install"
-                fi
-            fi
-        fi
-
-        if $CADDY_INSTALLED; then
-            CADDYFILE="/etc/caddy/Caddyfile"
-            if [ ! -w "/etc/caddy" ]; then
-                # 尝试项目本地 Caddyfile
-                CADDYFILE="${INSTALL_DIR}/Caddyfile"
-                warn "无权限写入 /etc/caddy/，将生成到 ${CADDYFILE}"
-            fi
-
-            spinner_start "正在生成 Caddyfile..."
-            cat > "/tmp/rustbill-caddyfile-$$" <<CADDYEOF
-# RustBill — ${RUSTBILL_DOMAIN}
-# HTTP/3 + TLS 自动管理 (Let's Encrypt)
-
-${RUSTBILL_DOMAIN} {
-    # Health check — pass to backend
-    handle /health {
-        reverse_proxy 127.0.0.1:50051
-    }
-    handle /ready {
-        reverse_proxy 127.0.0.1:50051
-    }
-
-    # gRPC-Web → h2c bridge to tonic backend
-    handle /rustbill.* {
-        reverse_proxy 127.0.0.1:50051
-    }
-
-    # Admin SPA — also use h2c, avoid HTTP/1.1→HTTP/2 translation
-    handle ${ADMIN_PATH:-/admin}* {
-        reverse_proxy 127.0.0.1:50051
-    }
-
-    # Customer SPA — static files (standalone frontend)
-    handle {
-        root * ${INSTALL_DIR}/consumer-dist
-        try_files {path} /index.html
-        file_server
-    }
-
-    # Security headers
-    header {
-        X-Frame-Options "SAMEORIGIN"
-        X-Content-Type-Options "nosniff"
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    }
-
-    # Logs
-    log {
-        output file /var/log/caddy/rustbill.log
-    }
-}
-CADDYEOF
-
-            if [ -w "$(dirname "$CADDYFILE")" ]; then
-                cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
-            else
-                sudo cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
-            fi
-            rm -f "/tmp/rustbill-caddyfile-$$"
-            spinner_ok "Caddyfile 已生成: ${CADDYFILE}"
-
-            # 测试配置
-            echo ""
-            spinner_start "正在验证 Caddy 配置..."
-            if sudo caddy validate --config "$CADDYFILE" &>/dev/null 2>&1; then
-                spinner_ok "Caddy 配置验证通过"
-            else
-                spinner_err "Caddy 配置验证失败，请检查 Caddyfile"
-            fi
-
-            # 询问是否启动
-            echo ""
-            confirm "是否现在启动 Caddy?" "y"
-            read -r start_caddy
-            if [ "${start_caddy,,}" = "y" ] || [ "${start_caddy,,}" = "yes" ]; then
-                spinner_start "正在启动 Caddy..."
-                if sudo systemctl enable caddy &>/dev/null 2>&1 && sudo systemctl restart caddy &>/dev/null 2>&1; then
-                    spinner_ok "Caddy 已启动 (开机自启)"
-                else
-                    sudo caddy start --config "$CADDYFILE" &>/dev/null 2>&1 && spinner_ok "Caddy 已启动" || spinner_err "Caddy 启动失败"
-                fi
-            else
-                info "Caddy 未启动，稍后可手动启动: sudo systemctl start caddy"
-            fi
-        fi
+        sed -i "s|host = \"0.0.0.0\"|host = \"127.0.0.1\"|" "${INSTALL_DIR}/config.toml"
+        ok "域名设置为: ${BOLD}${RUSTBILL_DOMAIN}${NC}"
     fi
+    if [ -n "$NOTIFY_EMAIL" ]; then
+        sed -i "s|# notify_email = \"admin@example.com\"|notify_email = \"${NOTIFY_EMAIL}\"|" "${INSTALL_DIR}/config.toml"
+        ok "通知邮箱: ${NOTIFY_EMAIL}"
+    fi
+
+    echo ""
+    box_top
+    box_line "${YELLOW}⚠ 非交互模式 — 请编辑 config.toml 完成配置:${NC}"
+    box_empty
+    box_line "  数据库 URL:  编辑 [db].url"
+    box_line "  管理员密码:  已自动生成 (见上方)"
+    box_line "  JWT 密钥:    已自动生成"
+    box_bottom
 fi
 
 # ── systemd 服务 (仅新安装，非更新) ───────────────────────────────────────────
@@ -1262,8 +1173,17 @@ WantedBy=multi-user.target"
         box_line "  实时日志:     sudo journalctl -u rustbill-server -f"
         box_bottom
 
-        # 询问是否现在启动
-        if ! $NON_INTERACTIVE; then
+        # 启动服务
+        if $NON_INTERACTIVE; then
+            spinner_start "正在启动 RustBill..."
+            sudo systemctl start rustbill-server
+            sleep 2
+            if systemctl is-active --quiet rustbill-server 2>/dev/null; then
+                spinner_ok "RustBill 已启动"
+            else
+                spinner_err "启动失败，请检查: sudo journalctl -u rustbill-server -n 30"
+            fi
+        else
             echo ""
             confirm "是否现在启动 RustBill?" "y"
             read -r start_now
@@ -1303,6 +1223,153 @@ if $IS_UPDATING; then
         ok "服务未在运行，跳过重启"
         echo ""
         echo -e "  ${GRAY}▸ 手动启动:${NC} cd ${INSTALL_DIR} && ./rustbill-server"
+    fi
+fi
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Caddy 反向代理 (所有模式)                                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+# 仅当提供了域名时配置 (交互模式下由向导设置，非交互模式下由 --domain 设置)
+# 跳过更新模式 (已有 Caddyfile)
+if ! $IS_UPDATING && [ -n "$RUSTBILL_DOMAIN" ]; then
+    echo ""
+    step_header "~" "$TOTAL_STEPS" "Caddy 反向代理"
+
+    CADDY_INSTALLED=false
+    if command -v caddy &>/dev/null; then
+        CADDY_INSTALLED=true
+        ok "Caddy 已安装: $(caddy version 2>/dev/null | head -1)"
+    else
+        warn "Caddy 未安装"
+        install_caddy="n"
+        if $NON_INTERACTIVE; then
+            install_caddy="y"
+        else
+            echo ""
+            echo -e "  Caddy 是推荐的反向代理，支持自动 HTTPS (HTTP/3 QUIC)。"
+            confirm "是否自动安装 Caddy?" "y"
+            read -r install_caddy
+        fi
+
+        if [ "${install_caddy,,}" = "y" ] || [ "${install_caddy,,}" = "yes" ]; then
+            if command -v apt &>/dev/null; then
+                spinner_start "通过 apt 安装 Caddy..."
+                if sudo apt update -qq &>/dev/null && sudo apt install -y -qq caddy &>/dev/null; then
+                    spinner_ok "Caddy 安装完成"
+                    CADDY_INSTALLED=true
+                else
+                    spinner_err "apt 安装失败"
+                fi
+            fi
+
+            if ! $CADDY_INSTALLED && command -v dnf &>/dev/null; then
+                spinner_start "通过 dnf 安装 Caddy..."
+                if sudo dnf install -y caddy &>/dev/null; then
+                    spinner_ok "Caddy 安装完成"
+                    CADDY_INSTALLED=true
+                else
+                    spinner_err "dnf 安装失败"
+                fi
+            fi
+
+            if ! $CADDY_INSTALLED; then
+                warn "自动安装失败，请手动安装 Caddy: https://caddyserver.com/docs/install"
+            fi
+        fi
+    fi
+
+    if $CADDY_INSTALLED; then
+        CADDYFILE="/etc/caddy/Caddyfile"
+        if [ ! -w "/etc/caddy" ]; then
+            CADDYFILE="${INSTALL_DIR}/Caddyfile"
+            warn "无权限写入 /etc/caddy/，将生成到 ${CADDYFILE}"
+        fi
+
+        spinner_start "正在生成 Caddyfile..."
+        cat > "/tmp/rustbill-caddyfile-$$" <<CADDYEOF
+# RustBill — ${RUSTBILL_DOMAIN}
+# HTTP/3 + TLS 自动管理 (Let's Encrypt)
+
+${RUSTBILL_DOMAIN} {
+    # Health check — pass to backend
+    handle /health {
+        reverse_proxy 127.0.0.1:50051
+    }
+    handle /ready {
+        reverse_proxy 127.0.0.1:50051
+    }
+
+    # gRPC-Web → h2c bridge to tonic backend
+    handle /rustbill.* {
+        reverse_proxy 127.0.0.1:50051
+    }
+
+    # Admin SPA — also use h2c
+    handle ${ADMIN_PATH:-/admin}* {
+        reverse_proxy 127.0.0.1:50051
+    }
+
+    # Customer SPA — static files (standalone frontend)
+    handle {
+        root * ${INSTALL_DIR}/consumer-dist
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # Logs
+    log {
+        output file /var/log/caddy/rustbill.log
+    }
+}
+CADDYEOF
+
+        if [ -w "$(dirname "$CADDYFILE")" ]; then
+            cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
+        else
+            sudo cp "/tmp/rustbill-caddyfile-$$" "$CADDYFILE"
+        fi
+        rm -f "/tmp/rustbill-caddyfile-$$"
+        spinner_ok "Caddyfile 已生成: ${CADDYFILE}"
+
+        # 验证配置
+        echo ""
+        spinner_start "正在验证 Caddy 配置..."
+        if sudo caddy validate --config "$CADDYFILE" &>/dev/null 2>&1; then
+            spinner_ok "Caddy 配置验证通过"
+        else
+            spinner_err "Caddy 配置验证失败，请手动检查 Caddyfile"
+        fi
+
+        # 启动/重载 Caddy
+        if $NON_INTERACTIVE; then
+            spinner_start "正在启动 Caddy..."
+            if sudo systemctl enable caddy &>/dev/null 2>&1 && sudo systemctl restart caddy &>/dev/null 2>&1; then
+                spinner_ok "Caddy 已启动 (开机自启)"
+            else
+                sudo caddy start --config "$CADDYFILE" &>/dev/null 2>&1 && spinner_ok "Caddy 已启动" || spinner_err "Caddy 启动失败"
+            fi
+        else
+            echo ""
+            confirm "是否现在启动 Caddy?" "y"
+            read -r start_caddy
+            if [ "${start_caddy,,}" = "y" ] || [ "${start_caddy,,}" = "yes" ]; then
+                spinner_start "正在启动 Caddy..."
+                if sudo systemctl enable caddy &>/dev/null 2>&1 && sudo systemctl restart caddy &>/dev/null 2>&1; then
+                    spinner_ok "Caddy 已启动 (开机自启)"
+                else
+                    sudo caddy start --config "$CADDYFILE" &>/dev/null 2>&1 && spinner_ok "Caddy 已启动" || spinner_err "Caddy 启动失败"
+                fi
+            else
+                info "Caddy 未启动，稍后可手动启动: sudo systemctl start caddy"
+            fi
+        fi
     fi
 fi
 
